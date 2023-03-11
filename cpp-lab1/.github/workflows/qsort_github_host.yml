@@ -1,0 +1,156 @@
+name: qsort_github_host
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, reopened ]
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  buildtest:
+    if: github.run_number < 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+
+    env:
+      EXE_EXT: If ('${{ matrix.os }}' -eq 'windows-latest') {".exe"} Else {""}
+      TEST_PATH: "../.github/workflows/"
+
+    steps:        
+      - uses: actions/checkout@v3
+
+      - name: build
+        run: |   
+          if ('${{ matrix.os }}' -eq 'ubuntu-latest')
+          {
+            clang-format-12 --version            
+            $a = Get-ChildItem -Recurse -Force -File -Name -LiteralPath '.' -Include @('*.c', '*.h', '*.cpp', '*.hpp') | Where-Object { $_ -notlike 'return_codes.h' }
+            
+            "::group::Checking formating files"
+            Write-Host '============================='
+            Write-Host "Checking formating files: $a" -ForegroundColor DarkCyan -BackgroundColor White
+            Write-Host '============================='
+            
+            clang-format-12 --dry-run --style=file $a 2>&1 | tee log.txt
+            echo "::endgroup::"
+            
+            if ((Get-ChildItem -Path log.txt).Length -eq 0) 
+            {
+              Write-Host '============================='
+              Write-Host "clang-format OK" -ForegroundColor DarkGreen -BackgroundColor White
+              Write-Host '============================='
+            }
+            else
+            {
+              Write-Host '============================='
+              Write-Host "clang-format NOK" -ForegroundColor DarkRed -BackgroundColor White
+              Write-Host '============================='
+            }
+            #exit (Get-ChildItem -Path log.txt).Length
+          }                
+          [void](mkdir build)
+          cd build 
+          $z = ${{ env.EXE_EXT }}
+          $exe = "main$($z)"
+          
+          "::group::Build log"
+          clang++ -std=c++20 -D _CRT_SECURE_NO_WARNINGS -D _USE_MATH_DEFINES  -O2 -I .. $((Get-ChildItem -Path .. -Include @('*.c', '*.cpp') -Recurse -ErrorAction SilentlyContinue -Force).FullName) -o $exe
+          echo "::endgroup::"    
+          
+      - name: pos tests ${{ matrix.lib }}
+        run: |
+          cd build
+          
+          $path = "${{ env.TEST_PATH }}"
+          $z = ${{ env.EXE_EXT }}
+          $exe = "./main$($z)"
+          $is = 0..1
+          $exit_code = 0
+                    
+          foreach ($i in $is)
+          {
+            "::group::Test $i"
+            
+            $test_input = "$($path)in$i.txt"
+            $test_ref = "$($path)ref$i.txt"
+            $test_output = "test_output$i"
+          
+            & ./$exe $test_input $test_output 2>&1 > stdouterr.log
+            if ((Get-ChildItem -Path stdouterr.log).Length -ne 0) 
+            { 
+              Write-Host $(Get-Content stdouterr.log -Raw) -ForegroundColor DarkRed -BackgroundColor White
+              Write-Host "Stdout and stderr must be empty" -ForegroundColor DarkRed -BackgroundColor White
+              $exit_code += 1
+              continue
+            }            
+          
+            if (-not (& Test-Path -Path $test_output -PathType Leaf))
+            {
+              Write-Host "Output file '$test_output' does not exist" -ForegroundColor DarkRed -BackgroundColor White
+              $exit_code += 1
+              continue
+            } 
+            elseif (-not (& Test-Path -Path $test_ref -PathType Leaf))
+            {
+              Write-Host "Something wrong with reference file '$test_ref'. Need to contact @viktoriya_yve in telegram"  -ForegroundColor DarkCyan -BackgroundColor White
+              $exit_code += 1
+              continue
+            }
+            else
+            {
+              $out_content = Get-Content "$test_output" -Raw
+              $ref_content = Get-Content "$test_ref" -Raw
+          
+              if ($ref_content -ne $out_content)
+              {
+                $out_content = if ($out_content.Length -eq 0) { "<file empty>" } else { $out_content }
+                Write-Host "Output content:"
+                Write-Host "-----------------------------------------------------"
+                Write-Host $out_content
+                Write-Host "-----------------------------------------------------"
+                Write-Host "Expected content:"
+                Write-Host "-----------------------------------------------------"
+                Write-Host $ref_content
+                Write-Host "-----------------------------------------------------"
+                $exit_code += 1
+              }            
+            }
+            echo "::endgroup::"
+          }    
+          $passed = $is.Length - $exit_code
+          Write-Host '======================================'
+          Write-Host "Passed $passed of $($is.Length) tests" -ForegroundColor DarkCyan -BackgroundColor White    
+          Write-Host '======================================'                  
+          exit $exit_code
+          
+      - name: neg test ${{ matrix.lib }}
+        run: |
+          cd build
+          
+          $alltests = 1
+          Write-Output "Test neg 1"
+          
+          $z = ${{ env.EXE_EXT }}
+          $exe = "./main$($z)"
+          & ./$exe 2>&1 > stdouterr.log
+          
+          if ((Get-ChildItem -Path stdouterr.log).Length -eq 0)
+          {
+            echo $(Get-Content stdouterr.log -Raw)
+            Write-Output "Stdout / stderr is empty" -ForegroundColor DarkRed -BackgroundColor White
+            $exit_code += 1  
+          } 
+          
+          $passed = $alltests - $exit_code
+          Write-Host '======================================*'
+          Write-Host "Passed $passed of $alltests tests" -ForegroundColor DarkCyan -BackgroundColor White    
+          Write-Host '======================================*'                  
+          exit $exit_code
